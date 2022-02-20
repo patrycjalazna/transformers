@@ -19,9 +19,10 @@ import math
 import os
 import random
 from pathlib import Path
+from typing import Union
 
 import datasets
-from datasets import load_dataset, load_metric
+from datasets import load_dataset, load_metric, Metric
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
@@ -39,9 +40,29 @@ from transformers import (
     default_data_collator,
     get_scheduler,
     set_seed,
+    RobertaForSequenceClassification,
+    GPT2ForSequenceClassification,
 )
 from transformers.file_utils import get_full_repo_name
 from transformers.utils.versions import require_version
+from torch import nn
+
+from gpt2 import (
+    GPT2ForSequenceClassificationCustomSimple,
+    GPT2ForSequenceClassificationCustom,
+)
+from roberta import (
+    RobertaForSequenceClassificationCustomSimple,
+    RobertaForSequenceClassificationCustom,
+    RobertaForSequenceClassificationCustomAlternative,
+)
+
+MODEL_TYPE = Union[
+    GPT2ForSequenceClassificationCustomSimple, GPT2ForSequenceClassificationCustom,
+    RobertaForSequenceClassificationCustomSimple, RobertaForSequenceClassificationCustom,
+    RobertaForSequenceClassificationCustomAlternative,
+    RobertaForSequenceClassification, GPT2ForSequenceClassification
+]
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +98,9 @@ def parse_args():
         "--validation_file", type=str, default=None, help="A csv or a json file containing the validation data."
     )
     parser.add_argument(
+        "--test_file", type=str, default=None, help="A csv or a json file containing the test data."
+    )
+    parser.add_argument(
         "--max_length",
         type=int,
         default=128,
@@ -95,6 +119,21 @@ def parse_args():
         type=str,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
         required=True,
+    )
+    parser.add_argument(
+        "--custom_model",
+        action="store_true",
+        help="If passed, will used custom implementation of model.",
+    )
+    parser.add_argument(
+        "--freeze_model",
+        action="store_true",
+        help="If passed, will freeze model weights (not classification head).",
+    )
+    parser.add_argument(
+        "--return_hidden_states",
+        action="store_true",
+        help="If passed, will return the hidden states of all layers.",
     )
     parser.add_argument(
         "--use_slow_tokenizer",
@@ -162,11 +201,39 @@ def parse_args():
         if args.validation_file is not None:
             extension = args.validation_file.split(".")[-1]
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
+        if args.test_file is not None:
+            extension = args.test_file.split(".")[-1]
+            assert extension in ["csv", "json"], "`test_file` should be a csv or a json file."
 
     if args.push_to_hub:
         assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
 
     return args
+
+
+def do_evaluate(
+    model: MODEL_TYPE, dataloader: DataLoader,
+    accelerator: Accelerator, metric: Metric,
+    output_hidden_states: bool,
+    is_regression: bool, logger_msg: str,
+    tqdm_msg: str = 'Evaluate',
+    disable_tqdm: bool = True,
+):
+    model.eval()
+    for step, batch in enumerate(tqdm(dataloader, total=len(dataloader), desc=tqdm_msg, disable=disable_tqdm)):
+        outputs = model(**batch, output_hidden_states=output_hidden_states)
+        predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
+        metric.add_batch(
+            predictions=accelerator.gather(predictions),
+            references=accelerator.gather(batch["labels"]),
+        )
+    eval_metric = metric.compute()
+    logger.info(f'{logger_msg}: {eval_metric}')
+
+
+def freeze_model(model: nn.Module) -> None:
+    for param in model.parameters():
+        param.requires_grad = False
 
 
 def main():
@@ -230,6 +297,8 @@ def main():
             data_files["train"] = args.train_file
         if args.validation_file is not None:
             data_files["validation"] = args.validation_file
+        if args.test_file is not None:
+            data_files["test"] = args.test_file
         extension = (args.train_file if args.train_file is not None else args.valid_file).split(".")[-1]
         raw_datasets = load_dataset(extension, data_files=data_files)
     # See more about loading any type of standard or custom dataset at
@@ -261,11 +330,54 @@ def main():
     # download model & vocab.
     config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, use_fast=not args.use_slow_tokenizer)
-    model = AutoModelForSequenceClassification.from_pretrained(
+
+    output_hidden_states = args.return_hidden_states
+    logger.info(f'Return hidden states from model: {output_hidden_states}')
+    custom_model = args.custom_model
+    custom_kwargs = {}
+    if custom_model:
+        # Uncomment code to select type of custom model
+        if 'roberta' in args.model_name_or_path:
+            # Simple implementation
+            # model_cls = RobertaForSequenceClassificationCustomSimple
+
+            # Custom implementation with custom forward method and additional argument
+            # model_cls = RobertaForSequenceClassificationCustom
+            # custom_kwargs = {'use_hidden_states': output_hidden_states}
+
+            # Custom implementation with custom forward method
+            model_cls = RobertaForSequenceClassificationCustomAlternative
+
+        elif 'gpt2' in args.model_name_or_path:
+            # Simple implementation
+            # model_cls = GPT2ForSequenceClassificationCustomSimple
+
+            # Custom implementation with custom forward method
+            model_cls = GPT2ForSequenceClassificationCustom
+
+        else:
+            logger.warning(f'Not found custom implementation for: {args.model_name_or_path}')
+            model_cls = AutoModelForSequenceClassification
+    else:
+        model_cls = AutoModelForSequenceClassification
+    logger.info(f'Using implementation from: {model_cls.__name__}')
+    model = model_cls.from_pretrained(
         args.model_name_or_path,
         from_tf=bool(".ckpt" in args.model_name_or_path),
         config=config,
+        **custom_kwargs
     )
+
+    if args.freeze_model:
+        logger.info('Freezing model weights')
+        if isinstance(model, RobertaForSequenceClassification):
+            freeze_model(model.roberta)
+
+        elif isinstance(model, GPT2ForSequenceClassification):
+            freeze_model(model.transformer)
+
+        else:
+            raise RuntimeError(f'Cannot freeze weights for {model.__class__.__name__}')
 
     # Preprocessing the datasets
     if args.task_name is not None:
@@ -313,11 +425,8 @@ def main():
         model.config.id2label = {id: label for label, id in config.label2id.items()}
 
     padding = "max_length" if args.pad_to_max_length else False
-
-    # Fix error for GPT2 when no token is set
-    # https://github.com/huggingface/transformers/issues/3859
-    if 'gpt2' in tokenizer.name_or_path:
-        logger.info(f'Pad token: {tokenizer.eos_token}')
+    if 'gpt2' in tokenizer.name_or_path and tokenizer.pad_token is None:
+        logger.info(f'Set PAD token to EOS: {tokenizer.eos_token}')
         tokenizer._pad_token = tokenizer.eos_token
         model.config.pad_token_id = model.config.eos_token_id
 
@@ -347,6 +456,7 @@ def main():
 
     train_dataset = processed_datasets["train"]
     eval_dataset = processed_datasets["validation_matched" if args.task_name == "mnli" else "validation"]
+    test_dataset = processed_datasets["test"]
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
@@ -367,6 +477,7 @@ def main():
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
     eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+    test_dataloader = DataLoader(test_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -384,8 +495,8 @@ def main():
     optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
+    model, optimizer, train_dataloader, eval_dataloader, test_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, test_dataloader
     )
 
     # Note -> the training dataloader needs to be prepared before we grab his length below (cause its length will be
@@ -428,7 +539,7 @@ def main():
     for epoch in range(args.num_train_epochs):
         model.train()
         for step, batch in enumerate(train_dataloader):
-            outputs = model(**batch)
+            outputs = model(**batch, output_hidden_states=output_hidden_states)
             loss = outputs.loss
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
@@ -442,17 +553,8 @@ def main():
             if completed_steps >= args.max_train_steps:
                 break
 
-        model.eval()
-        for step, batch in enumerate(eval_dataloader):
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
-            metric.add_batch(
-                predictions=accelerator.gather(predictions),
-                references=accelerator.gather(batch["labels"]),
-            )
-
-        eval_metric = metric.compute()
-        logger.info(f"epoch {epoch}: {eval_metric}")
+        do_evaluate(model, eval_dataloader, accelerator, metric, output_hidden_states,
+                    is_regression, f'Epoch {epoch}', tqdm_msg='Validating')
 
         if args.push_to_hub and epoch < args.num_train_epochs - 1:
             accelerator.wait_for_everyone()
@@ -460,9 +562,10 @@ def main():
             unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
             if accelerator.is_main_process:
                 tokenizer.save_pretrained(args.output_dir)
-                repo.push_to_hub(
-                    commit_message=f"Training in progress epoch {epoch}", blocking=False, auto_lfs_prune=True
-                )
+                repo.push_to_hub(commit_message=f"Training in progress epoch {epoch}", blocking=False)
+
+    do_evaluate(model, test_dataloader, accelerator, metric, output_hidden_states,
+                is_regression, 'Test-set evaluation', tqdm_msg='Evaluate test-set')
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
@@ -471,7 +574,7 @@ def main():
         if accelerator.is_main_process:
             tokenizer.save_pretrained(args.output_dir)
             if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
+                repo.push_to_hub(commit_message="End of training")
 
     if args.task_name == "mnli":
         # Final evaluation on mismatched validation set
