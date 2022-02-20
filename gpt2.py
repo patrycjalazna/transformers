@@ -73,6 +73,83 @@ class GPT2ClassificationHeadCustom(nn.Module):
 
         x = torch.cat((x, hidden), dim=2)
         x = self.dense_2(x)
+        x = torch.sigmoid(x)
+        x = self.dropout(x)
+
+        x = self.out_proj(x)
+        return x
+
+# ----------- CUSTOM HEADS ------------------------
+class GPT2ClassificationHeadCustomVerion2(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        hidden_size = config.n_embd
+        self.dense_1_input = nn.Linear(hidden_size, 2 * hidden_size)
+        self.dense_1_hidden = nn.Linear(hidden_size, 2 * hidden_size)
+        self.dense_2 = nn.Linear(4 * hidden_size, 4 * hidden_size)
+        self.dense_3 = nn.Linear(4 * hidden_size, hidden_size)
+        self.dropout = nn.Dropout(config.resid_pdrop)
+        self.out_proj = nn.Linear(hidden_size, config.num_labels, bias=False)
+
+    def forward(self, x, **kwargs):
+        if 'hidden_states' in kwargs and kwargs['hidden_states'] is not None:
+            # Get hidden states from last layer
+            hidden = kwargs['hidden_states'][-1]
+        else:
+            hidden = torch.zeros(x.size(), dtype=x.dtype, device=x.device)
+
+        x = self.dense_1_input(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+
+        hidden = self.dense_1_hidden(hidden)
+        hidden = torch.relu(hidden)
+        hidden = self.dropout(hidden)
+
+        x = torch.cat((x, hidden), dim=2)
+        x = self.dense_2(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+
+        x = self.dense_3(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+
+        x = self.out_proj(x)
+        return x
+
+class GPT2ClassificationHeadCustomVerion2(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        hidden_size = config.n_embd
+        self.dense_1_input = nn.Linear(hidden_size, 2 * hidden_size)
+        self.dense_1_hidden = nn.Linear(hidden_size, 2 * hidden_size)
+        self.dense_2 = nn.Linear(4 * hidden_size, 4 * hidden_size)
+        self.dense_3 = nn.Linear(4 * hidden_size, hidden_size)
+        self.dropout = nn.Dropout(config.resid_pdrop)
+        self.out_proj = nn.Linear(hidden_size, config.num_labels, bias=False)
+
+    def forward(self, x, **kwargs):
+        if 'hidden_states' in kwargs and kwargs['hidden_states'] is not None:
+            # Get hidden states from last layer
+            hidden = kwargs['hidden_states'][-1]
+        else:
+            hidden = torch.zeros(x.size(), dtype=x.dtype, device=x.device)
+
+        x = self.dense_1_input(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+
+        hidden = self.dense_1_hidden(hidden)
+        hidden = torch.relu(hidden)
+        hidden = self.dropout(hidden)
+
+        x = torch.cat((x, hidden), dim=2)
+        x = self.dense_2(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+
+        x = self.dense_3(x)
         x = torch.relu(x)
         x = self.dropout(x)
 
@@ -85,7 +162,11 @@ class GPT2ForSequenceClassificationCustom(GPT2ForSequenceClassification):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.transformer = GPT2Model(config)
-        self.score = GPT2ClassificationHeadCustom(config)
+
+        # SIMPLE CUSTOM HEAD
+        # self.score = GPT2ClassificationHeadCustom(config)
+        # ZMIANY
+        self.score = GPT2ClassificationHeadCustomVerion2(config)
 
         self.init_weights()
 
