@@ -315,6 +315,7 @@ def main():
     padding = "max_length" if args.pad_to_max_length else False
 
     # Fix error for GPT2 when no token is set
+    # https://github.com/huggingface/transformers/issues/3859
     if 'gpt2' in tokenizer.name_or_path:
         logger.info(f'Pad token: {tokenizer.eos_token}')
         tokenizer._pad_token = tokenizer.eos_token
