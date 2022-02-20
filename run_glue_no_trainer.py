@@ -314,6 +314,12 @@ def main():
 
     padding = "max_length" if args.pad_to_max_length else False
 
+    # Fix error for GPT2 when no token is set
+    if 'gpt2' in tokenizer.name_or_path:
+        logger.info(f'Pad token: {tokenizer.eos_token}')
+        tokenizer._pad_token = tokenizer.eos_token
+        model.config.pad_token_id = model.config.eos_token_id
+
     def preprocess_function(examples):
         # Tokenize the texts
         texts = (
