@@ -64,8 +64,13 @@ require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/tran
 MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
-MAP_CLASSIFICATION_LABEL = {'positive': 1, 'negative': 0}
-
+MAP_CLASSIFICATION_LABEL = {'sadness': 0,
+            'joy': 1,
+            'love': 2,
+            'anger': 3,
+            'fear': 4,
+            'suprise': 5}
+            
 MODEL_TYPE = Union[T5ForConditionalGeneration]
 
 
