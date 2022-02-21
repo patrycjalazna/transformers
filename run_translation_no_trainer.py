@@ -493,7 +493,7 @@ def main():
             tokenizer.tgt_lang = args.target_lang
 
     # Get the language codes for input/target.
-    source_lang = 'tweet'
+    source_lang = 'text'
     target_lang = 'label'
 
     padding = "max_length" if args.pad_to_max_length else False
