@@ -356,7 +356,7 @@ def main():
             # model_cls = GPT2ForSequenceClassificationCustom
             # Version 2
             model_cls = GPT2ForSequenceClassificationCustom
-            custom_kwargs = {'use_hidden_states': output_hidden_states}
+            # custom_kwargs = {'use_hidden_states': output_hidden_states}
         else:
             logger.warning(f'Not found custom implementation for: {args.model_name_or_path}')
             model_cls = AutoModelForSequenceClassification
